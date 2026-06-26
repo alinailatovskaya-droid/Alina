@@ -1,0 +1,133 @@
+import cv2
+import torch
+import numpy as np
+from PIL import Image
+from sklearn.metrics.pairwise import cosine_similarity
+import os
+
+# --- Конфигурация ---
+FRAME_INTERVAL = 1  # Извлекаем кадр каждую секунду
+TOP_N_RESULTS = 3   # Сколько результатов возвращать
+
+def extract_frames(video_path, frame_rate=FRAME_INTERVAL):
+    """
+    Извлекает кадры из видео с заданным интервалом.
+    Возвращает список кадров (PIL.Image) и их временные метки.
+    """
+    if not os.path.exists(video_path):
+        raise FileNotFoundError(f"Файл {video_path} не найден.")
+
+    frames = []
+    timestamps = []
+    cap = cv2.VideoCapture(video_path)
+
+    if not cap.isOpened():
+        raise ValueError(f"Не удалось открыть видеофайл {video_path}")
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    interval = int(round(fps / frame_rate))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    for i in range(total_frames):
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        if i % interval == 0:
+            # Конвертируем из BGR (OpenCV) в RGB (Pillow)
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
+            frames.append(pil_image)
+            timestamps.append(i / fps)
+
+    cap.release()
+    return frames, timestamps
+
+def load_clip_model(device='cuda'):
+    """Загружает модель CLIP."""
+    try:
+        model, preprocess = torch.hub.load('openai/clip', 'ViT-B/32', device=device)
+        return model, preprocess
+    except Exception as e:
+        print(f"Ошибка загрузки модели CLIP: {e}")
+        return None, None
+
+def encode_text(model, text, device):
+    """Кодирует текстовый запрос в вектор."""
+    import clip
+    tokenized_text = clip.tokenize([text]).to(device)
+    with torch.no_grad():
+        text_embedding = model.encode_text(tokenized_text)
+    return text_embedding.cpu().numpy().flatten()
+
+def encode_images(model, images, preprocess, batch_size=8, device='cuda'):
+    """Кодирует список изображений в матрицу эмбеддингов."""
+    embeddings = []
+    image_tensors = [preprocess(img).unsqueeze(0) for img in images]
+
+    for i in range(0, len(image_tensors), batch_size):
+        batch = torch.cat(image_tensors[i:i+batch_size], dim=0).to(device)
+        with torch.no_grad():
+            batch_emb = model.encode_image(batch)
+        embeddings.extend(batch_emb.cpu().numpy())
+
+    return np.array(embeddings)
+
+def search_scenes(text_embedding, image_embeddings, timestamps, top_n=TOP_N_RESULTS):
+    """Ищет наиболее похожие кадры и возвращает их таймкоды."""
+    similarities = cosine_similarity([text_embedding], image_embeddings)[0]
+    top_indices = np.argsort(similarities)[::-1][:top_n]
+
+    results = []
+    for idx in top_indices:
+        score = similarities[idx]
+        time_sec = timestamps[idx]
+        minutes = int(time_sec // 60)
+        seconds = int(time_sec % 60)
+        timecode = f"{minutes:02d}:{seconds:02d}"
+
+        results.append({
+            'score': float(score),
+            'timecode': timecode,
+            'timestamp': float(time_sec)
+        })
+    return results
+
+def search_scenes_in_video
+torch.no is parked
+torch.no
+
+
+(query_text, video_file_path):
+    """
+    Основная функция для вызова из интерфейса.
+    Принимает текст запроса и путь к файлу.
+    """
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    if device == 'cpu':
+        return {"error": "GPU (CUDA) не обнаружен. Поиск на CPU будет очень медленным."}
+
+    model, preprocess = load_clip_model(device)
+    if model is None:
+        return {"error": "Не удалось загрузить модель CLIP."}
+
+    try:
+        frames, timestamps = extract_frames(video_file_path)
+        if not frames:
+            return {"error": "Не удалось извлечь кадры из видео."}
+
+        query_vec = encode_text(model, query_text, device)
+        image_vecs = encode_images(model, frames, preprocess, device=device)
+
+        matches = search_scenes(query_vec, image_vecs, timestamps)
+        
+        # Формируем красивый вывод для пользователя
+        output_text = "Найдены следующие моменты:\n"
+        for match in matches:
+            output_text += f"- Время: {match['timecode']} (сходство: {match['score']:.2f})\n"
+            
+        return output_text
+
+    except Exception as e:
+        return {"error": f"Произошла ошибка: {str(e)}"}
